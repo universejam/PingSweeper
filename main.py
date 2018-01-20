@@ -57,7 +57,7 @@ def getAllNetworkDevicesIPAndMAC(IP=None):
 threadQueue = Queue()
 
 
-def pingHosts(net_addr):
+def scanSubnet(net_addr):
     ip_net = ipaddress.ip_network(net_addr)
     all_hosts = list(ip_net.hosts())
     # Configure subprocess to hide the console window
@@ -67,17 +67,20 @@ def pingHosts(net_addr):
     iterations = len(all_hosts)
     foundCounter = 0
     print("Starting ping sweep for " + str(iterations) + " IP addresses above " + str(all_hosts[0]))
-    for i in range(iterations):
-        ip = str(all_hosts[i])
-        # print("Pinging " + ip)
-        output = subprocess.Popen(['ping', '-n', '1', '-w', '400', ip], stdout=subprocess.PIPE,
+    foundCounter = queryEachHost(all_hosts, foundCounter, info)
+    print("Scan for " + net_addr + " complete. " + str(foundCounter) + " IPs responded")
+    threadQueue.task_done()
+
+
+def queryEachHost(all_hosts, foundCounter, info):
+    for host in all_hosts:
+        IP = str(host)
+        output = subprocess.Popen(['ping', '-n', '1', '-w', '400', IP], stdout=subprocess.PIPE,
                                   startupinfo=info).communicate()[0].decode("utf-8")
         if "Received = 1" in output and "unreachable" not in output:
-            # print(ip, "is Online!!")
-            # print(output)
             foundCounter += 1
             try:
-                macAddress = getAllNetworkDevicesIPAndMAC(ip)[0]
+                macAddress = getAllNetworkDevicesIPAndMAC(IP)[0]
                 foundIP = macAddress[0]
                 foundMAC = macAddress[1]
                 vendorData = findVendor(foundMAC)['result']
@@ -88,32 +91,55 @@ def pingHosts(net_addr):
                     print(IPandVendorData)
                     foundIPs.write(IPandVendorData + "\n----------------------------\n")
             except Exception as e:
-                print("MAC not found for " + ip)
+                print("MAC not found for " + IP)
                 print(e)
-    else:
-        print("Scan for " + net_addr + " complete. " + str(foundCounter) + " IPs responded")
-        threadQueue.task_done()
+    return foundCounter
 
 
 myIP = getLocalIP()
+print("Getting first two starting octets from your local IP: " + myIP)
+
 localIP_CIDR = getLocalIP()
+localIP_CIDR = "192.168.0.0"
 with fuckit:
     os.remove("foundIPs.txt")
 startTime = time.clock()
 thirdOctet = 0
+interval = 0.1
+
+
+def limitInterval():
+    global interval
+    if interval < 0.1:
+        interval = 0.1
+    elif interval > 3:
+        interval = 3
+
+
 while thirdOctet < 255:
-    cpu = int(psutil.cpu_percent(interval=0.5))
-    print("CPU: " + str(cpu) + "%")
+    limitInterval()
+    print("Interval = " + str(interval))
+    cpu = int(psutil.cpu_percent(interval=interval))
+    # print("CPU: " + str(cpu) + "%")
+
     if cpu < 70 and cpu > 0:
         splitIP = localIP_CIDR.split(".")
         localIP_CIDR = splitIP[0] + "." + splitIP[1] + "." + str(thirdOctet) + ".0/24"
-        pingThread = Thread(target=pingHosts, args=(localIP_CIDR,))
+        pingThread = Thread(target=scanSubnet, args=(localIP_CIDR,))
         pingThread.start()
         thirdOctet += 1
         threadQueue.put(pingThread)
+    if cpu > 50:
+        interval += 0.4
+    elif cpu < 50:
+        interval -= 0.3
 
 threadQueue.join()
 endTime = time.clock()
 duration = endTime - startTime
 m, s = divmod(duration, 60)
-print("Ping sweep complete in " + str(m) + "minutes, " + str(s) + " seconds")
+finishedStatement = "Ping sweep complete in " + str(m) + "minutes, " + str(s) + " seconds"
+print(finishedStatement)
+with open("timeRecords.txt", "a+") as timeRecordsFile:
+    timeRecordsFile.write("\n")
+    timeRecordsFile.write(finishedStatement)
